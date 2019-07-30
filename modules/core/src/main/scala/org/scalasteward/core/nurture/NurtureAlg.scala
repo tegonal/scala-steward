@@ -61,7 +61,7 @@ final class NurtureAlg[F[_]](
         .map(x => x.fold(_.asLeft[Unit], identity))
     }
 
-  def cloneAndSync(repo: Repo): F[(Repo, Branch)] =
+  private def cloneAndSync(repo: Repo): F[(Repo, Branch)] =
     for {
       _ <- logger.info(s"Clone and synchronize ${repo.show}")
       repoOut <- vcsApiAlg.createForkOrGetRepo(config, repo)
@@ -69,7 +69,10 @@ final class NurtureAlg[F[_]](
       parent <- vcsRepoAlg.syncFork(repo, repoOut)
     } yield (repoOut.repo, parent.default_branch)
 
-  def updateDependencies(repo: Repo, fork: Repo, baseBranch: Branch): F[Either[Throwable, Unit]] =
+  private def updateDependencies(
+      repo: Repo,
+      fork: Repo,
+      baseBranch: Branch): F[Either[Throwable, Unit]] =
     for {
       _ <- logger.info(s"Find updates for ${repo.show}")
       repoConfig <- repoConfigAlg.readRepoConfigOrDefault(repo)
@@ -87,12 +90,12 @@ final class NurtureAlg[F[_]](
       }
     } yield toFoldableOps(result).fold
 
-  def getNonSbtUpdates(repo: Repo): F[List[Update.Single]] =
+  private def getNonSbtUpdates(repo: Repo): F[List[Update.Single]] =
     for {
       maybeScalafmt <- scalafmtAlg.getScalafmtUpdate(repo)
     } yield List(maybeScalafmt).flatten
 
-  def processUpdate(data: UpdateData): F[Either[Throwable, Unit]] =
+  private def processUpdate(data: UpdateData): F[Either[Throwable, Unit]] =
     for {
       _ <- logger.info(s"Process update ${data.update.show}")
       head = vcs.listingBranch(config.vcsType, data.fork, data.update)
@@ -118,7 +121,7 @@ final class NurtureAlg[F[_]](
     def asRight: F[Either[Throwable, A]] = f.map(_.asRight[Throwable])
   }
 
-  def applyNewUpdate(data: UpdateData): F[Unit] =
+  private def applyNewUpdate(data: UpdateData): F[Unit] =
     (editAlg.applyUpdate(data.repo, data.update) >> gitAlg.containsChanges(data.repo)).ifM(
       gitAlg.returnToCurrentBranch(data.repo) {
         for {
@@ -131,14 +134,14 @@ final class NurtureAlg[F[_]](
       logger.warn("No files were changed")
     )
 
-  def commitAndForcePush(data: UpdateData): F[Unit] =
+  private def commitAndForcePush(data: UpdateData): F[Unit] =
     for {
       _ <- logger.info("Commit and push changes")
       _ <- gitAlg.commitAll(data.repo, git.commitMsgFor(data.update))
       _ <- gitAlg.forcePush(data.repo, data.updateBranch)
     } yield ()
 
-  def createPullRequest(data: UpdateData): F[Unit] =
+  private def createPullRequest(data: UpdateData): F[Unit] =
     for {
       _ <- logger.info(s"Create PR ${data.updateBranch.name}")
       branchName = vcs.createBranch(config.vcsType, data.fork, data.update)
@@ -158,12 +161,41 @@ final class NurtureAlg[F[_]](
     gitAlg.returnToCurrentBranch(data.repo) {
       for {
         _ <- gitAlg.checkoutBranch(data.repo, data.updateBranch)
-        shallUpdate <- shouldBeUpdated(data)
-        _ <- unitUnless(shallUpdate)(mergeAndApplyAgain(data))
+        wasNecessary <- rebaseIfNecessary(data)
+        _ <- unitUnless(!wasNecessary)(mergeIfNecessary(data))
       } yield ()
     }
 
-  def shouldBeUpdated(data: UpdateData): F[Boolean] = {
+  private def rebaseIfNecessary(data: UpdateData): F[Boolean] =
+    for {
+      shallRebase <- shouldRebase(data)
+      _ <- unitUnless(shallRebase)(rebaseOnBaseBranch(data))
+    } yield shallRebase
+
+  private def shouldRebase(data: UpdateData): F[Boolean] =
+    for {
+      changes <- gitAlg.changesSinceBranching(data.repo, data.updateBranch, data.baseBranch)
+      searchString = s"fix for ${data.updateBranch.name}"
+      shall = changes.exists(_.contains(searchString))
+      _ <- unitUnless(shall)(
+        logger.info(s"found `$searchString` in a new commit on ${data.baseBranch.name}"))
+    } yield shall
+
+  private def rebaseOnBaseBranch(data: UpdateData): F[Unit] =
+    for {
+      _ <- gitAlg.checkoutBranch(data.repo, data.updateBranch)
+      _ <- logger.info(s"Rebase ${data.updateBranch.name} onto ${data.baseBranch.name}")
+      _ <- gitAlg.rebase(data.repo, data.baseBranch)
+      _ <- gitAlg.forcePush(data.repo, data.updateBranch)
+    } yield ()
+
+  private def mergeIfNecessary(data: UpdateData): F[Unit] =
+    for {
+      shallUpdate <- shouldBeUpdated(data)
+      _ <- unitUnless(shallUpdate)(mergeAndApplyAgain(data))
+    } yield ()
+
+  private def shouldBeUpdated(data: UpdateData): F[Boolean] = {
     val result = gitAlg.isMerged(data.repo, data.updateBranch, data.baseBranch).flatMap {
       case true => (false, "PR has been merged").pure[F]
       case false =>
@@ -181,7 +213,7 @@ final class NurtureAlg[F[_]](
     result.flatMap { case (reset, msg) => logger.info(msg).as(reset) }
   }
 
-  def mergeAndApplyAgain(data: UpdateData): F[Unit] =
+  private def mergeAndApplyAgain(data: UpdateData): F[Unit] =
     for {
       _ <- logger.info(
         s"Merge branch '${data.baseBranch.name}' into ${data.updateBranch.name} and apply again"

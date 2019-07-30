@@ -23,14 +23,13 @@ import org.scalasteward.core.git.Sha1
 import org.scalasteward.core.nurture.PullRequestRepository
 import org.scalasteward.core.repocache.RepoCacheRepository
 import org.scalasteward.core.sbt._
-import org.scalasteward.core.unitUnless
 import org.scalasteward.core.sbt.data.ArtificialProject
 import org.scalasteward.core.update.data.UpdateState
 import org.scalasteward.core.update.data.UpdateState._
 import org.scalasteward.core.util.MonadThrowable
 import org.scalasteward.core.vcs.data.PullRequestState.Closed
 import org.scalasteward.core.vcs.data.Repo
-import org.scalasteward.core.{sbt, scalafmt, util}
+import org.scalasteward.core.{sbt, scalafmt, unitUnless, util}
 
 final class UpdateService[F[_]](
     implicit

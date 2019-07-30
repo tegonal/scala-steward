@@ -28,6 +28,8 @@ import org.scalasteward.core.vcs.data.Repo
 trait GitAlg[F[_]] {
   def branchAuthors(repo: Repo, branch: Branch, base: Branch): F[List[String]]
 
+  def changesSinceBranching(repo: Repo, branch: Branch, base: Branch): F[List[String]]
+
   def checkoutBranch(repo: Repo, branch: Branch): F[Unit]
 
   def clone(repo: Repo, url: Uri): F[Unit]
@@ -51,6 +53,8 @@ trait GitAlg[F[_]] {
   def mergeTheirs(repo: Repo, branch: Branch): F[Unit]
 
   def forcePush(repo: Repo, branch: Branch): F[Unit]
+
+  def rebase(repo: Repo, branch: Branch): F[Unit]
 
   def remoteBranchExists(repo: Repo, branch: Branch): F[Boolean]
 
@@ -76,6 +80,20 @@ object GitAlg {
       F: BracketThrowable[F]
   ): GitAlg[F] =
     new GitAlg[F] {
+      override def changesSinceBranching(
+          repo: Repo,
+          branch: Branch,
+          base: Branch
+      ): F[List[String]] =
+        for {
+          repoDir <- workspaceAlg.repoDir(repo)
+          lines <- exec(Nel.of("merge-base", branch.name, base.name), repoDir)
+          rev <- F.fromEither(Sha1.from(lines))
+          // we do not want to search the whole history, if there are more than 100 commits,
+          // then the user should do the rebase manually
+          changes <- exec(Nel.of("log", "-n", "100", rev.value.value, base.name), repoDir)
+        } yield changes
+
       override def branchAuthors(repo: Repo, branch: Branch, base: Branch): F[List[String]] =
         execFromRepo(Nel.of("log", "--pretty=format:'%an'", dotdot(base, branch)), repo)
 
@@ -122,7 +140,7 @@ object GitAlg {
       override def latestSha1(repo: Repo, branch: Branch): F[Sha1] =
         for {
           lines <- execFromRepo(Nel.of("rev-parse", "--verify", branch.name), repo)
-          sha1 <- F.fromEither(Sha1.from(lines.mkString("").trim))
+          sha1 <- F.fromEither(Sha1.from(lines))
         } yield sha1
 
       override def mergeTheirs(repo: Repo, branch: Branch): F[Unit] = {
@@ -132,6 +150,9 @@ object GitAlg {
 
       override def forcePush(repo: Repo, branch: Branch): F[Unit] =
         execFromRepo_(Nel.of("push", "--force", "--set-upstream", "origin", branch.name), repo)
+
+      override def rebase(repo: Repo, branch: Branch): F[Unit] =
+        execFromRepo_(Nel.of("rebase", branch.name), repo)
 
       override def remoteBranchExists(repo: Repo, branch: Branch): F[Boolean] =
         for {
