@@ -488,6 +488,7 @@
 - synesso/scala-stellar-sdk
 - tanishiking/scalaunfmt
 - tbrown1979/totp4s
+- tegonal/lasius
 - thesamet/sbt-protoc
 - ThoughtWorksInc/bindable.scala
 - ThoughtWorksInc/Binding.scala
